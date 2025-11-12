@@ -88,9 +88,8 @@ jobs:
             - If changes look good and low risk, say exactly: "✅ LGTM. Approved for merge."
             - Otherwise, list concise issues that must be fixed.
 
-      # 8) Extract & post Claude's summary back to the PR; also expose it for the next step
+            # 8) Post Claude's summary back to the PR from the saved JSON
       - name: Post Claude report to PR
-        id: report
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,13 +98,12 @@ jobs:
           set -euo pipefail
           PR="${{ steps.prnum.outputs.pr }}"
           REPORT_JSON="/home/runner/work/_temp/claude-execution-output.json"
-
+      
           if [ ! -f "$REPORT_JSON" ]; then
             echo "No Claude report found at $REPORT_JSON; skipping."
-            echo "body=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
+      
           # Object shape: { "result": "..." }  OR  array-of-turns
           if jq -e 'type=="object" and has("result")' "$REPORT_JSON" >/dev/null 2>&1; then
             BODY="$(jq -r '.result' "$REPORT_JSON")"
@@ -119,32 +117,50 @@ jobs:
           else
             BODY=""
           fi
-
+      
           if [ -z "${BODY:-}" ] || [ "$BODY" = "null" ]; then
             BODY="(Claude report attached)\n\n\`\`\`json\n$(head -c 60000 "$REPORT_JSON")\n\`\`\`"
           fi
-
+      
           gh pr comment "$PR" --body "$BODY"
-
-          # Expose for next step (multiline output)
-          {
-            echo "body<<'EOF'"
-            echo "$BODY"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # 9) Auto-approve ONLY if Claude explicitly green-lights
+      
+      # 9) Auto-approve ONLY if Claude explicitly green-lights (read JSON again; no outputs needed)
       - name: Approve PR if Claude LGTM
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}  # PAT (repo) or fine-grained: Pull requests=Write, Contents=Read
+          GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}  # PAT with repo scope or fine-grained: Pull requests=Write, Contents=Read
         shell: bash
         run: |
+          set -euo pipefail
           PR="${{ steps.prnum.outputs.pr }}"
-          BODY="${{ steps.report.outputs.body }}"
-
-          # Accept any of these explicit green-lights
-          if printf '%s' "$BODY" | grep -Eiq '(^|[^A-Za-z])✅ *LGTM\.? *Approved for merge\.?($|[^A-Za-z])|^no material risk found$' ; then
+          REPORT_JSON="/home/runner/work/_temp/claude-execution-output.json"
+      
+          if [ ! -f "$REPORT_JSON" ]; then
+            echo "No Claude report JSON; skipping auto-approval."
+            exit 0
+          fi
+      
+          # Extract plain text again (same logic as previous step)
+          if jq -e 'type=="object" and has("result")' "$REPORT_JSON" >/dev/null 2>&1; then
+            BODY="$(jq -r '.result' "$REPORT_JSON")"
+          elif jq -e 'type=="array"' "$REPORT_JSON" >/dev/null 2>&1; then
+            BODY="$(jq -r '
+              [
+                .[] | .result?,
+                (.[]?.message?.content[]? | select(.type=="text") | .text?)
+              ] | map(select(.!=null and .!="")) | unique | join("\n\n")
+            ' "$REPORT_JSON")"
+          else
+            BODY=""
+          fi
+      
+          if [ -z "${BODY:-}" ] || [ "$BODY" = "null" ]; then
+            echo "Empty Claude body; skipping auto-approval."
+            exit 0
+          fi
+      
+          # Approve only on an explicit green-light phrase
+          if printf '%s\n' "$BODY" | grep -Eiq '(^|[^A-Za-z])✅ *LGTM\.? *Approved for merge\.?($|[^A-Za-z])|^no material risk found$' ; then
             echo "Claude indicated approval; submitting Approve review."
             gh pr review "$PR" --approve --body "Auto-approved based on Claude review."
           else
