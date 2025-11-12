@@ -11,63 +11,59 @@ permissions:
   pull-requests: write
   id-token: write
 
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     timeout-minutes: 12
+    # Only run for PR comments that mention @claude
     if: contains(github.event.comment.body, '@claude') && (github.event_name == 'pull_request_review_comment' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 0) (Optional) more verbose runner logs
-      - name: Enable step debug (needs repo secret ACTIONS_STEP_DEBUG=true)
-        if: ${{ secrets.ACTIONS_STEP_DEBUG }}
-        run: echo "Step debug is on"
-
-      # 1) Verify your Anthropic key actually works from the runner
-      - name: Sanity check Anthropic API key
+      # Quick sanity check that we can post to the PR
+      - name: Preflight: can post a PR comment?
         run: |
-          set -euo pipefail
-          echo 'Calling Anthropic...'
-          resp="$(curl -sS https://api.anthropic.com/v1/messages \
-            -H "x-api-key: $ANTHROPIC_API_KEY" \
-            -H "anthropic-version: 2023-06-01" \
-            -H "content-type: application/json" \
-            -d '{"model":"claude-3-5-sonnet-20240620","max_tokens":8,"messages":[{"role":"user","content":"ping"}]}' )"
-          echo "OK. Truncated response:"
-          echo "$resp" | head -c 300
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
-      # 2) Verify we can post to the PR (permissions/token)
-      - name: Can post a PR comment?
-        if: ${{ github.event_name == 'pull_request_review_comment' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null) }}
-        run: |
-          pr_number="${{ github.event.issue.number || github.event.pull_request.number }}"
-          curl -sS -H "authorization: Bearer $GH_TOKEN" \
+          PR="${{ github.event.issue.number || github.event.pull_request.number }}"
+          curl -sS -H "authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                -H "accept: application/vnd.github+json" \
                -X POST \
-               -d "{\"body\":\":white_check_mark: GitHub token can post comments (preflight).\"}" \
-               "https://api.github.com/repos/${{ github.repository }}/issues/${pr_number}/comments"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+               -d '{"body":":rocket: Claude review starting…"}' \
+               "https://api.github.com/repos/${{ github.repository }}/issues/${PR}/comments"
 
-      # 3) (Optional) small speed-up
+      # (Optional) small speed-up for Bun runtime used by the action
       - name: Cache Bun
         uses: actions/cache@v4
         with:
           path: ~/.bun
           key: bun-1.2.11
 
-      # 4) Run Claude Code
-      - name: Run Claude Code Action (comment-triggered)
-        uses: anthropics/claude-code-action@v1
+      # Run Claude Code to review the PR diff
+      - name: Run Claude Code Action
+        uses: anthropics/claude-code-action@v1.0.6
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}   # <-- add this secret in repo settings
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
-            You are reviewing a GitHub pull request. Focus on security, correctness, and clarity.
-            - Only comment on files that changed in this PR.
-            - Prioritize actionable fixes and cite specific lines.
-            - Keep comments concise; avoid restating code.
+            You are reviewing a GitHub pull request. Focus on correctness and security.
+            - Review only changed files.
+            - If changes look good and low risk, post: "✅ LGTM. Approved for merge."
+            - Otherwise, leave concise inline comments explaining what must be fixed.
+
+      # OPTIONAL: auto-approve if a maintainer has added the 'auto-approve' label
+      - name: Approve PR (label-gated)
+        env:
+            GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}              # <-- create a PAT secret (see notes below)
+        run: |
+          PR="${{ github.event.issue.number || github.event.pull_request.number }}"
+          # Only approve if the PR has an 'auto-approve' label
+          has_label=$(gh pr view "$PR" --json labels --jq '.labels[].name' | grep -Fx "auto-approve" || true)
+          if [ -z "$has_label" ]; then
+            echo "No 'auto-approve' label; skipping approval."
+            exit 0
+          fi
+          gh pr review "$PR" --approve --body "Auto-approved after Claude review."
