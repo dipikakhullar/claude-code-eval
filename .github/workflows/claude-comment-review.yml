@@ -18,17 +18,15 @@ concurrency:
 jobs:
   review:
     timeout-minutes: 12
-    # Only run for PR comments that mention @claude
     if: contains(github.event.comment.body, '@claude') && (github.event_name == 'pull_request_review_comment' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
     runs-on: ubuntu-latest
-
     steps:
-      # 1) Check out repo with FULL history
+      # 1) Full history so HEAD~1 diffs work
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2) Resolve the PR number for either event shape
+      # 2) Derive PR number for either event shape
       - name: Derive PR number
         id: prnum
         shell: bash
@@ -42,7 +40,7 @@ jobs:
           fi
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
 
-      # 3) Check out the PR HEAD so local git diffs match the PR (prevents HEAD~1 errors)
+      # 3) Check out the PR head so we diff the actual PR, not main
       - name: Checkout PR head
         shell: bash
         run: |
@@ -51,7 +49,7 @@ jobs:
           git checkout "pr-$PR"
           git log --oneline -3
 
-      # 4) (Optional) Get the list of changed files in the PR (we’ll pass it to Claude via prompt)
+      # 4) Get changed files (to pass to prompt)
       - name: Determine changed files
         id: changes
         env:
@@ -62,7 +60,7 @@ jobs:
           files=$(gh pr view "$PR" --json files --jq '.files[].path' | tr '\n' ' ' || true)
           echo "files=$files" >> "$GITHUB_OUTPUT"
 
-      # 5) Preflight: verify we can post to the PR
+      # 5) Preflight comment (confirms perms)
       - name: Preflight - can post a PR comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,32 +69,30 @@ jobs:
           PR="${{ steps.prnum.outputs.pr }}"
           gh pr comment "$PR" --body ":rocket: Claude review starting..."
 
-      # 6) (Optional) tiny speed-up for Bun runtime used by the action
+      # 6) (Optional) speed-up for Bun
       - name: Cache Bun
         uses: actions/cache@v4
         with:
           path: ~/.bun
           key: bun-1.2.11
 
-      # 7) Run Claude Code to review ONLY the PR diff
+      # 7) Run Claude Code (no --pr-comments; this build writes a report JSON)
       - name: Run Claude Code Action
         id: claude
         uses: anthropics/claude-code-action@v1.0.6
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Ask this build to emit PR comments if supported; we also post a summary below
-          claude_args: "--pr-comments"
           prompt: |
             You are reviewing a GitHub pull request. Focus on correctness and security.
-            - Review only the PR's changed files: ${{ steps.changes.outputs.files }}
+            - Review only these changed files: ${{ steps.changes.outputs.files }}
             - Do not comment on files outside the PR.
-            - If changes look good and low risk, post: "✅ LGTM. Approved for merge."
-            - Otherwise, leave concise inline comments explaining what must be fixed.
+            - If changes look good and low risk, say: "✅ LGTM. Approved for merge."
+            - Otherwise, list concise issues that must be fixed.
 
-      # 8) Post Claude's summary report to the PR (some builds only save to a temp JSON)
+      # 8) Post Claude's summary back to the PR from the saved JSON
       - name: Post Claude report to PR
-        if: always()  # still post even if previous step returns nonzero
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -114,11 +110,11 @@ jobs:
             echo "No Claude report found; skipping."
           fi
 
-      # 9) OPTIONAL: auto-approve only if a maintainer adds 'auto-approve' label
+      # 9) OPTIONAL: auto-approve only when maintainers add the label
       - name: Approve PR (label-gated)
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}  # PAT: Classic(repo) OR Fine-grained(Contents:Read, Pull requests:Write)
+          GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}  # PAT with repo scope (or fine-grained: Contents:Read, Pull requests:Write)
         shell: bash
         run: |
           PR="${{ steps.prnum.outputs.pr }}"
