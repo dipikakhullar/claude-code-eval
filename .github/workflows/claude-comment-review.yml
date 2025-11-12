@@ -91,7 +91,7 @@ jobs:
             - Otherwise, list concise issues that must be fixed.
 
       # 8) Post Claude's summary back to the PR from the saved JSON
-            - name: Post Claude report to PR
+      - name: Post Claude report to PR
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
