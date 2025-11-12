@@ -82,13 +82,20 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
-            You are reviewing a GitHub pull request. Focus on correctness and security.
-            - Review only these changed files: ${{ steps.changes.outputs.files }}
-            - Do not comment on files outside the PR.
-            - If changes look good and low risk, say exactly: "✅ LGTM. Approved for merge."
-            - Otherwise, list concise issues that must be fixed.
+            You are reviewing a GitHub pull request. Review only these changed files:
+            ${{ steps.changes.outputs.files }}
+          
+            Review policy:
+            - Focus on **correctness, security, and major functional risks**.
+            - **Ignore** stylistic, documentation, formatting, naming, or minor readability issues.
+            - Only flag problems that would **break code, tests, security, or data integrity**.
+            - If there are no major issues, respond exactly: "✅ LGTM. Approved for merge."
+          
+            Output format:
+            - If you find blockers, list them clearly and briefly.
+            - Do not comment on files that only contain README or documentation edits.
 
-            # 8) Post Claude's summary back to the PR from the saved JSON
+      # 8) Post Claude's summary back to the PR from the saved JSON
       - name: Post Claude report to PR
         if: always()
         env:
