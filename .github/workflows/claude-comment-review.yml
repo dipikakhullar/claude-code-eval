@@ -9,21 +9,22 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write      # 👈 REQUIRED for OIDC
 
 jobs:
   review:
-    # Only run when a PR comment contains '@claude'
     if: contains(github.event.comment.body, '@claude') && (github.event_name == 'pull_request_review_comment' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-      # NOTE: fetch-depth 0 helps some tools; not required here
         uses: actions/checkout@v4
 
       - name: Run Claude Code Action (comment-triggered)
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Passing the default token explicitly is safe and helps some setups
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are reviewing a GitHub pull request. Focus on security, correctness, and clarity.
             - Only comment on files that changed in this PR.
