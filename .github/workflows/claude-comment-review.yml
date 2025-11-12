@@ -91,24 +91,45 @@ jobs:
             - Otherwise, list concise issues that must be fixed.
 
       # 8) Post Claude's summary back to the PR from the saved JSON
-      - name: Post Claude report to PR
+            - name: Post Claude report to PR
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           PR="${{ steps.prnum.outputs.pr }}"
           REPORT_JSON="/home/runner/work/_temp/claude-execution-output.json"
-          if [ -f "$REPORT_JSON" ]; then
-            body=$(jq -r '.result' "$REPORT_JSON")
-            if [ -n "$body" ] && [ "$body" != "null" ]; then
-              gh pr comment "$PR" --body "$body"
-            else
-              echo "Claude report empty; skipping."
-            fi
-          else
-            echo "No Claude report found; skipping."
+
+          if [ ! -f "$REPORT_JSON" ]; then
+            echo "No Claude report found at $REPORT_JSON; skipping."
+            exit 0
           fi
+
+          # Try object shape first: { "result": "..." }
+          if jq -e 'type=="object" and has("result")' "$REPORT_JSON" >/dev/null 2>&1; then
+            BODY="$(jq -r '.result' "$REPORT_JSON")"
+          # Else handle array-of-turns shape
+          elif jq -e 'type=="array"' "$REPORT_JSON" >/dev/null 2>&1; then
+            # Pull any final 'result' fields, or concatenate assistant text chunks
+            BODY="$(jq -r '
+              [
+                .[] | .result?,
+                (.[]?.message?.content[]? | select(.type=="text") | .text?)
+              ]
+              | map(select(.!=null)) | join("\n\n")
+            ' "$REPORT_JSON")"
+          else
+            BODY=""
+          fi
+
+          # Fallback: dump a truncated JSON block if we couldn't extract text
+          if [ -z "${BODY:-}" ] || [ "$BODY" = "null" ]; then
+            echo "Structured body empty; posting truncated raw JSON."
+            BODY="(Claude report attached)\n\n\`\`\`json\n$(head -c 60000 "$REPORT_JSON")\n\`\`\`"
+          fi
+
+          gh pr comment "$PR" --body "$BODY"
 
       # 9) OPTIONAL: auto-approve only when maintainers add the label
       - name: Approve PR (label-gated)
