@@ -26,13 +26,18 @@ jobs:
       - uses: actions/checkout@v4
 
       # Quick sanity check that we can post to the PR
-      - name: Preflight: can post a PR comment?
+      - name: Preflight - can post a PR comment
         run: |
-          PR="${{ github.event.issue.number || github.event.pull_request.number }}"
+          # Derive PR number from either event shape
+          PR="${{ github.event.pull_request.number }}"
+          if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+            PR="${{ github.event.issue.number }}"
+          fi
+
           curl -sS -H "authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                -H "accept: application/vnd.github+json" \
                -X POST \
-               -d '{"body":":rocket: Claude review starting…"}' \
+               -d '{"body":":rocket: Claude review starting..."}' \
                "https://api.github.com/repos/${{ github.repository }}/issues/${PR}/comments"
 
       # (Optional) small speed-up for Bun runtime used by the action
@@ -46,7 +51,7 @@ jobs:
       - name: Run Claude Code Action
         uses: anthropics/claude-code-action@v1.0.6
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}   # <-- add this secret in repo settings
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are reviewing a GitHub pull request. Focus on correctness and security.
@@ -57,13 +62,18 @@ jobs:
       # OPTIONAL: auto-approve if a maintainer has added the 'auto-approve' label
       - name: Approve PR (label-gated)
         env:
-            GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}              # <-- create a PAT secret (see notes below)
+          GH_TOKEN: ${{ secrets.GH_PAT_REVIEW }}  # PAT with repo scope (or fine-grained: Pull requests=Write, Contents=Read)
         run: |
-          PR="${{ github.event.issue.number || github.event.pull_request.number }}"
+          PR="${{ github.event.pull_request.number }}"
+          if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+            PR="${{ github.event.issue.number }}"
+          fi
+
           # Only approve if the PR has an 'auto-approve' label
           has_label=$(gh pr view "$PR" --json labels --jq '.labels[].name' | grep -Fx "auto-approve" || true)
           if [ -z "$has_label" ]; then
             echo "No 'auto-approve' label; skipping approval."
             exit 0
           fi
+
           gh pr review "$PR" --approve --body "Auto-approved after Claude review."
