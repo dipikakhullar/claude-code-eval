@@ -12,14 +12,12 @@ permissions:
 
 jobs:
   review:
-    if: >-
-      ${
-        { contains(github.event.comment.body, '@claude')
-           && (github.event.issue.pull_request != null || github.event.pull_request != null) }
-      }
+    # Only run when a PR comment contains '@claude'
+    if: contains(github.event.comment.body, '@claude') && (github.event_name == 'pull_request_review_comment' || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
+      # NOTE: fetch-depth 0 helps some tools; not required here
         uses: actions/checkout@v4
 
       - name: Run Claude Code Action (comment-triggered)
@@ -31,4 +29,4 @@ jobs:
             - Only comment on files that changed in this PR.
             - Prioritize actionable fixes and cite specific lines.
             - Keep comments concise; avoid restating code.
-          # Optional: claude_args: "--model sonnet-4.5"
+          # claude_args: "--model sonnet-4.5"
